@@ -58,7 +58,7 @@ Once the content loads, each row looks like this:
     <div class="row__results__category"> Appendix U - Noise Impact Assessment </div>
   </div>
   <div class="row__fill">
-    <a href="https://…/getContent?AttachRef=SSD-…%2120260218T235840.826+GMT"> View </a>
+    <a href="https://…/getContent?AttachRef=REF-…%21202602…+GMT"> View </a>
   </div>
 </div>
 ```
