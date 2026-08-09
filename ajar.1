@@ -1,0 +1,86 @@
+.TH AJAR 1 "August 2026" "ajar 0.1.0" "User Commands"
+.SH NAME
+ajar \- open a JavaScript-walled page and get the files out
+.SH SYNOPSIS
+.B ajar
+.I url
+.RI [ options ]
+.SH DESCRIPTION
+.B ajar
+renders a page in headless Chrome, clicks open every tab, accordion and
+.B <details>
+element it can find, and then prints or downloads the documents behind them.
+.PP
+It exists for document registers that reveal their file lists only after user
+interaction, where
+.BR curl (1),
+.BR wget (1)
+and even
+.B chrome --dump-dom
+see an empty page.
+.PP
+By default only links that look like documents are listed \(em those with a file
+extension, or a URL containing
+.BR download ,
+.BR attachment ,
+.B getContent
+and similar. Names are taken from the anchor text, or, when that text is
+uninformative ("View", "Download"), from the nearest ancestor carrying real words.
+.SH OPTIONS
+.TP
+.BI \-\-match " STR"
+Keep only links whose name or URL contains
+.IR STR ,
+case-insensitively.
+.TP
+.B \-\-all
+List every link, not just document-looking ones.
+.TP
+.BI \-\-get " DIR"
+Download the matched links into
+.IR DIR ,
+naming each file from its label.
+.TP
+.BI \-\-click " SEL|TEXT"
+Click a CSS selector, or the smallest element containing
+.IR TEXT .
+Repeatable; runs before the automatic expansion.
+.TP
+.B \-\-no\-expand
+Do not automatically open tabs, accordions and
+.BR <details> .
+.TP
+.BI \-\-dom " FILE"
+Write the rendered DOM to
+.IR FILE .
+.TP
+.B \-\-json
+Emit results as JSON.
+.TP
+.BI \-\-wait " SEC"
+Settle time after load and after each interaction. Default 3.
+.TP
+.BR \-q ", " \-\-quiet
+Suppress progress output on standard error.
+.TP
+.BR \-v ", " \-\-version
+Print the version and exit.
+.SH ENVIRONMENT
+.TP
+.B AJAR_CHROME
+Path to the Chrome, Chromium, Brave or Edge binary, if it is not in a standard
+location.
+.SH EXIT STATUS
+0 on success, 1 on usage error, 130 if interrupted.
+.SH CAVEATS
+.B ajar
+clicks things. Do not point it at a page with destructive controls without
+.B \-\-no\-expand
+and an explicit
+.BR \-\-click .
+It cannot get past logins, paywalls or CAPTCHAs and does not try.
+.SH SEE ALSO
+.BR curl (1),
+.BR wget (1)
+.SH AUTHOR
+Jonathan O'Brien

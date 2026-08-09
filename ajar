@@ -1,0 +1,408 @@
+#!/usr/bin/env python3
+"""ajar — open a JavaScript-walled page and get the files out.
+
+Renders a page in headless Chrome, clicks open every tab, accordion and <details>
+element, then prints (or downloads) the documents hiding behind them.
+
+No dependencies. The WebSocket client is stdlib sockets, so this keeps working in
+sandboxes and on machines where you can't pip install anything.
+"""
+
+import argparse
+import base64
+import json
+import os
+import re
+import shutil
+import socket
+import struct
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+__version__ = "0.1.0"
+
+CHROME_CANDIDATES = [
+    os.environ.get("AJAR_CHROME", ""),
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    shutil.which("google-chrome") or "",
+    shutil.which("chromium") or "",
+    shutil.which("chromium-browser") or "",
+]
+
+UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+
+# Extensions that mean "this is a document, not a page"
+DOC_HINT = re.compile(
+    r"\.(pdf|docx?|xlsx?|pptx?|csv|zip|rtf|txt|json|geojson|dwg|tif+)(\?|$)"
+    r"|getcontent|/download|/attachment|attachref|/documents?/|/files?/",
+    re.I,
+)
+
+
+def find_chrome():
+    for c in CHROME_CANDIDATES:
+        if c and os.path.exists(c):
+            return c
+    sys.exit("ajar: no Chrome/Chromium found. Set AJAR_CHROME to the binary path.")
+
+
+# ----------------------------------------------------------------------------- websocket
+
+class WS:
+    """Minimal RFC 6455 client: enough to speak the Chrome DevTools Protocol."""
+
+    def __init__(self, url, timeout=60):
+        m = re.match(r"ws://([^:/]+):(\d+)(/.*)", url)
+        if not m:
+            raise ValueError(f"not a ws:// url: {url}")
+        host, port, path = m.group(1), int(m.group(2)), m.group(3)
+        self.sock = socket.create_connection((host, port), timeout=timeout)
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.sock.sendall(
+            f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\n"
+            f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+            f"Sec-WebSocket-Version: 13\r\n\r\n".encode()
+        )
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise IOError("chrome closed the connection during handshake")
+            buf += chunk
+        if b" 101 " not in buf.split(b"\r\n", 1)[0]:
+            raise IOError("chrome refused the websocket upgrade")
+        self.buf = buf.split(b"\r\n\r\n", 1)[1]
+        self._id = 0
+
+    def _read(self, n):
+        while len(self.buf) < n:
+            chunk = self.sock.recv(1 << 16)
+            if not chunk:
+                raise IOError("socket closed")
+            self.buf += chunk
+        out, self.buf = self.buf[:n], self.buf[n:]
+        return out
+
+    def _frame(self, payload, opcode=0x1):
+        n = len(payload)
+        head = bytes([0x80 | opcode])
+        if n < 126:
+            head += struct.pack("!B", 0x80 | n)
+        elif n < 1 << 16:
+            head += struct.pack("!BH", 0x80 | 126, n)
+        else:
+            head += struct.pack("!BQ", 0x80 | 127, n)
+        mask = os.urandom(4)
+        return head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+
+    def send(self, obj):
+        self.sock.sendall(self._frame(json.dumps(obj).encode()))
+
+    def recv(self):
+        """Read one complete message, reassembling fragments and answering pings."""
+        chunks, opcode = [], None
+        while True:
+            b1, b2 = self._read(2)
+            fin, op = b1 & 0x80, b1 & 0x0F
+            n = b2 & 0x7F
+            if n == 126:
+                n = struct.unpack("!H", self._read(2))[0]
+            elif n == 127:
+                n = struct.unpack("!Q", self._read(8))[0]
+            data = self._read(n)
+            if op == 0x9:                       # ping -> pong
+                self.sock.sendall(self._frame(data, opcode=0xA))
+                continue
+            if op in (0xA, 0x8):                # pong / close
+                if op == 0x8:
+                    raise IOError("chrome closed the websocket")
+                continue
+            if op != 0x0:
+                opcode = op
+            chunks.append(data)
+            if fin:
+                break
+        raw = b"".join(chunks)
+        return json.loads(raw.decode("utf-8", "replace")) if opcode == 0x1 else {}
+
+    def call(self, method, params=None, timeout=120):
+        self._id += 1
+        mid = self._id
+        self.send({"id": mid, "method": method, "params": params or {}})
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            msg = self.recv()
+            if msg.get("id") == mid:
+                if "error" in msg:
+                    raise RuntimeError(f"{method}: {msg['error'].get('message', msg['error'])}")
+                return msg.get("result", {})
+        raise TimeoutError(f"{method} timed out after {timeout}s")
+
+    def js(self, expr, timeout=120):
+        r = self.call("Runtime.evaluate",
+                      {"expression": expr, "returnByValue": True, "awaitPromise": True},
+                      timeout=timeout)
+        res = r.get("result", {})
+        if r.get("exceptionDetails"):
+            raise RuntimeError(res.get("description") or "javascript error")
+        return res.get("value")
+
+
+# ----------------------------------------------------------------------------- injected js
+
+EXPAND_JS = r"""
+(() => {
+  let n = 0;
+  // Click <summary>, don't set details.open — lazy-loading accordions hang their fetch off
+  // the click handler, so setting the property just opens an empty box.
+  document.querySelectorAll('details:not([open]) > summary').forEach(s => { s.click(); n++; });
+  document.querySelectorAll('[aria-expanded="false"]').forEach(e => { e.click(); n++; });
+  document.querySelectorAll('[role="tab"][aria-selected="false"]').forEach(e => { e.click(); n++; });
+  return n;
+})()
+"""
+
+CLICK_JS = r"""
+(() => {
+  const q = %s;
+  const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+  let els = [];
+  try { els = Array.from(document.querySelectorAll(q)); } catch (e) {}
+  if (!els.length) {
+    // Text match, smallest element first so we hit the control and not a wrapper.
+    const needle = norm(q).toLowerCase();
+    els = Array.from(document.querySelectorAll('*'))
+      .filter(e => norm(e.textContent).toLowerCase().includes(needle))
+      .sort((a, b) => norm(a.textContent).length - norm(b.textContent).length);
+  }
+  const t = els[0];
+  if (!t) return 'no match';
+  const c = t.closest('a,button,summary,[role="tab"],[role="button"],[onclick]') || t;
+  c.scrollIntoView();
+  c.click();
+  return 'clicked <' + c.tagName.toLowerCase() + '> ' + norm(c.textContent).slice(0, 60);
+})()
+"""
+
+LINKS_JS = r"""
+(() => {
+  const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+  const dull = t => !t || /^(view|download|open|link|pdf|here|more|read more)$/i.test(t);
+  return Array.from(document.querySelectorAll('a[href]')).map(a => {
+    const text = norm(a.textContent);
+    let label = text;
+    if (dull(text)) {
+      // The anchor often sits in its own cell with the real name in a sibling; walk up
+      // until an ancestor has text of its own once anchors are stripped out.
+      let node = a.parentElement;
+      for (let i = 0; i < 5 && node; i++, node = node.parentElement) {
+        const clone = node.cloneNode(true);
+        clone.querySelectorAll('a,button').forEach(x => x.remove());
+        const t = norm(clone.textContent);
+        if (t) { label = t; break; }
+      }
+    }
+    return { href: a.href, text: text, label: label || text };
+  });
+})()
+"""
+
+
+# ----------------------------------------------------------------------------- driver
+
+def render(url, clicks=(), expand=True, wait=3.0, rounds=6, port=0, quiet=False):
+    """Return (html, links) after loading `url` and opening everything on it."""
+    chrome = find_chrome()
+    if not port:
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+    profile = os.path.join("/tmp", f"ajar-profile-{port}")
+
+    say = (lambda *a: None) if quiet else (lambda *a: print(*a, file=sys.stderr))
+    proc = subprocess.Popen(
+        [chrome, "--headless=new", "--disable-gpu", f"--remote-debugging-port={port}",
+         "--no-first-run", "--no-default-browser-check", "--disable-extensions",
+         f"--user-data-dir={profile}", f"--user-agent={UA}", "about:blank"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        ws_url = None
+        for _ in range(60):
+            time.sleep(0.5)
+            try:
+                tabs = json.load(urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/json/list", timeout=5))
+                page = next((t for t in tabs if t.get("type") == "page"), None)
+                if page:
+                    ws_url = page["webSocketDebuggerUrl"]
+                    break
+            except Exception:
+                continue
+        if not ws_url:
+            sys.exit("ajar: could not reach Chrome DevTools — is Chrome installed and runnable?")
+
+        ws = WS(ws_url)
+        ws.call("Page.enable")
+        ws.call("Runtime.enable")
+        say(f"  loading {url}")
+        ws.call("Page.navigate", {"url": url})
+        time.sleep(wait + 3)
+
+        for c in clicks:
+            say(f"  click {c!r}: {ws.js(CLICK_JS % json.dumps(c))}")
+            time.sleep(wait)
+
+        if expand:
+            for i in range(rounds):
+                opened = ws.js(EXPAND_JS)
+                say(f"  expand {i + 1}: opened {opened}")
+                if not opened:
+                    break
+                time.sleep(wait)   # opening one section often lazy-loads another inside it
+
+        html = ws.js("document.documentElement.outerHTML") or ""
+        links = ws.js(LINKS_JS) or []
+        return html, links
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except Exception:
+            proc.kill()
+        shutil.rmtree(profile, ignore_errors=True)
+
+
+# ----------------------------------------------------------------------------- output
+
+def safe_name(label, fallback):
+    name = re.sub(r"[^\w.\- ]+", "", label).strip()
+    name = re.sub(r"\s+", " ", name)[:120]
+    return name or fallback
+
+
+def download(links, outdir, quiet=False):
+    os.makedirs(outdir, exist_ok=True)
+    used, ok, failed = set(), 0, 0
+    for i, l in enumerate(links, 1):
+        base = safe_name(l["label"], f"document-{i}")
+        req = urllib.request.Request(l["href"], headers={"User-Agent": UA})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                blob = r.read()
+                ctype = r.headers.get("Content-Type", "")
+                disp = r.headers.get("Content-Disposition", "")
+        except Exception as e:
+            print(f"  ✗ {base}: {e}", file=sys.stderr)
+            failed += 1
+            continue
+
+        ext = ""
+        m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)', disp)
+        if m and "." in m.group(1):
+            ext = "." + m.group(1).rsplit(".", 1)[1].strip().strip('"')
+        if not ext:
+            ext = {"application/pdf": ".pdf", "text/html": ".html", "text/csv": ".csv",
+                   "application/json": ".json", "application/zip": ".zip"}.get(
+                       ctype.split(";")[0].strip(), "")
+        if not ext and blob[:4] == b"%PDF":
+            ext = ".pdf"
+
+        name = base if base.lower().endswith(ext.lower()) and ext else base + ext
+        stem, n = name, 2
+        while name.lower() in used:
+            root, dot, e = stem.partition(".")
+            name = f"{root} ({n}){dot}{e}" if dot else f"{stem} ({n})"
+            n += 1
+        used.add(name.lower())
+
+        path = os.path.join(outdir, name)
+        with open(path, "wb") as fh:
+            fh.write(blob)
+        ok += 1
+        if not quiet:
+            print(f"  ✓ {name}  ({len(blob) / 1e6:.1f} MB)", file=sys.stderr)
+    print(f"ajar: downloaded {ok} file(s) to {outdir}"
+          + (f", {failed} failed" if failed else ""), file=sys.stderr)
+
+
+def main():
+    p = argparse.ArgumentParser(
+        prog="ajar",
+        description="Open a JavaScript-walled page and get the files out.",
+        epilog="Examples:\n"
+               "  ajar URL                      list the documents behind the JS\n"
+               "  ajar URL --all                list every link, not just document-ish ones\n"
+               "  ajar URL --match noise        only links whose name or url matches\n"
+               "  ajar URL --get ./docs         download them\n"
+               "  ajar URL --click 'Documents'  click something first\n"
+               "  ajar URL --dom page.html      save the rendered DOM instead\n",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("url", nargs="?")
+    p.add_argument("--click", action="append", default=[], metavar="SEL|TEXT",
+                   help="click a CSS selector, or an element containing this text (repeatable)")
+    p.add_argument("--no-expand", action="store_true",
+                   help="don't auto-open tabs, accordions and <details>")
+    p.add_argument("--match", metavar="STR",
+                   help="keep only links whose name or URL contains STR (case-insensitive)")
+    p.add_argument("--all", action="store_true",
+                   help="list every link, not just ones that look like documents")
+    p.add_argument("--get", metavar="DIR", help="download the matched links into DIR")
+    p.add_argument("--dom", metavar="FILE", help="write the rendered DOM to FILE")
+    p.add_argument("--json", action="store_true", help="emit results as JSON")
+    p.add_argument("--wait", type=float, default=3.0, metavar="SEC",
+                   help="settle time after load and each interaction (default 3)")
+    p.add_argument("-q", "--quiet", action="store_true", help="suppress progress on stderr")
+    p.add_argument("-v", "--version", action="version", version=f"ajar {__version__}")
+    args = p.parse_args()
+
+    if not args.url:
+        p.print_help()
+        return 1
+    url = args.url if "://" in args.url else "https://" + args.url
+
+    html, links = render(url, clicks=args.click, expand=not args.no_expand,
+                         wait=args.wait, quiet=args.quiet)
+
+    if args.dom:
+        with open(args.dom, "w", encoding="utf-8") as fh:
+            fh.write(html)
+        if not args.quiet:
+            print(f"ajar: wrote {args.dom} ({len(html):,} chars)", file=sys.stderr)
+
+    seen, keep = set(), []
+    for l in links:
+        href = l["href"]
+        if href in seen or href.startswith(("javascript:", "mailto:", "tel:")):
+            continue
+        seen.add(href)
+        if not args.all and not DOC_HINT.search(href):
+            continue
+        if args.match and args.match.lower() not in (l["label"] + " " + href).lower():
+            continue
+        keep.append(l)
+
+    if args.get:
+        download(keep, args.get, quiet=args.quiet)
+    elif args.json:
+        print(json.dumps(keep, indent=1))
+    elif not args.dom or args.match or args.all:
+        for l in keep:
+            print(f"{l['label'][:110]}\t{l['href']}")
+    if not args.quiet and not args.get:
+        print(f"ajar: {len(keep)} link(s)", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
