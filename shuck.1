@@ -1,12 +1,12 @@
-.TH AJAR 1 "August 2026" "ajar 0.1.0" "User Commands"
+.TH SHUCK 1 "August 2026" "shuck 0.1.0" "User Commands"
 .SH NAME
-ajar \- open a JavaScript-walled page and get the files out
+shuck \- get the documents out of a JavaScript shell
 .SH SYNOPSIS
-.B ajar
+.B shuck
 .I url
 .RI [ options ]
 .SH DESCRIPTION
-.B ajar
+.B shuck
 renders a page in headless Chrome, clicks open every tab, accordion and
 .B <details>
 element it can find, and then prints or downloads the documents behind them.
@@ -67,13 +67,13 @@ Suppress progress output on standard error.
 Print the version and exit.
 .SH ENVIRONMENT
 .TP
-.B AJAR_CHROME
+.B SHUCK_CHROME
 Path to the Chrome, Chromium, Brave or Edge binary, if it is not in a standard
 location.
 .SH EXIT STATUS
 0 on success, 1 on usage error, 130 if interrupted.
 .SH CAVEATS
-.B ajar
+.B shuck
 clicks things. Do not point it at a page with destructive controls without
 .B \-\-no\-expand
 and an explicit

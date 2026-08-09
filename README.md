@@ -1,13 +1,13 @@
-# ajar 🚪
+# shuck 🦪
 
-**Open a JavaScript-walled page and get the files out.**
+**Get the documents out of a JavaScript shell.**
 
 Some document registers only show you their files after you click a tab, expand an accordion, or wait for an AJAX call. `curl` sees an empty page. `wget` sees an empty page. Even `chrome --dump-dom` sees an empty page, because nothing has been clicked yet.
 
-`ajar` renders the page in headless Chrome, **clicks open every tab, accordion and `<details>` element it can find**, and then tells you what's behind them — or downloads it.
+`shuck` renders the page in headless Chrome, **clicks open every tab, accordion and `<details>` element it can find**, and then tells you what's behind them — or downloads it.
 
 ```console
-$ ajar planningportal.nsw.gov.au/major-projects/projects/project-mars-data-centre
+$ shuck planningportal.nsw.gov.au/major-projects/projects/project-mars-data-centre
   loading https://www.planningportal.nsw.gov.au/major-projects/projects/project-mars-data-centre
   expand 1: opened 27
   expand 2: opened 0
@@ -16,36 +16,36 @@ Appendix T - Air Quality Impact Assessment  https://majorprojects.planningportal
 Appendix U - Noise Impact Assessment       https://majorprojects.planningportal…
 Appendix V - Ground and Water Conditions   https://majorprojects.planningportal…
 …
-ajar: 67 link(s)
+shuck: 67 link(s)
 ```
 
 Then take them:
 
 ```console
-$ ajar <url> --match noise --get ./docs
+$ shuck <url> --match noise --get ./docs
   ✓ Appendix U - Noise Impact Assessment.pdf  (20.4 MB)
-ajar: downloaded 1 file(s) to ./docs
+shuck: downloaded 1 file(s) to ./docs
 ```
 
 ## Why
 
-Written while trying to get a noise assessment out of the NSW Planning Portal, which serves its 48-document EIS list only after an accordion click, hangs the fetch off the click handler (so setting `details.open` gets you an empty box), and puts the document's real name in a *sibling* cell to the download link. `ajar` handles all three, and the same three tricks cover most government document registers.
+Written while trying to get a noise assessment out of the NSW Planning Portal, which serves its 48-document EIS list only after an accordion click, hangs the fetch off the click handler (so setting `details.open` gets you an empty box), and puts the document's real name in a *sibling* cell to the download link. `shuck` handles all three, and the same three tricks cover most government document registers.
 
 ## Install
 
 ```sh
-git clone https://github.com/jonobri/ajar
-ln -s "$PWD/ajar/ajar" /usr/local/bin/ajar   # or anywhere on your PATH
+git clone https://github.com/jonobri/shuck
+ln -s "$PWD/shuck/shuck" /usr/local/bin/shuck   # or anywhere on your PATH
 ```
 
 Needs Python 3.8+ and Chrome, Chromium, Brave or Edge. **No pip install** — the WebSocket client is stdlib sockets, so it keeps working in sandboxes and locked-down environments where you can't add dependencies.
 
-If your browser lives somewhere unusual, set `AJAR_CHROME=/path/to/binary`.
+If your browser lives somewhere unusual, set `SHUCK_CHROME=/path/to/binary`.
 
 ## Usage
 
 ```
-ajar <url> [options]
+shuck <url> [options]
 
   --match STR       keep only links whose name or URL contains STR
   --all             list every link, not just document-looking ones
@@ -59,24 +59,24 @@ ajar <url> [options]
   -q, --quiet       suppress progress on stderr
 ```
 
-By default `ajar` prints only links that look like documents — a file extension, or a URL containing `download`, `attachment`, `getContent` and friends. `--all` turns that filter off.
+By default `shuck` prints only links that look like documents — a file extension, or a URL containing `download`, `attachment`, `getContent` and friends. `--all` turns that filter off.
 
-Names come from the anchor text, unless the anchor says something useless like "View" or "Download", in which case `ajar` walks up the DOM until it finds a label with actual words in it.
+Names come from the anchor text, unless the anchor says something useless like "View" or "Download", in which case `shuck` walks up the DOM until it finds a label with actual words in it.
 
 ## Examples
 
 ```sh
 # what's on this page?
-ajar example.gov/register --all
+shuck example.gov/register --all
 
 # just the acoustics, downloaded
-ajar example.gov/register --match acoustic --get ./acoustics
+shuck example.gov/register --match acoustic --get ./acoustics
 
 # something needs clicking first
-ajar example.gov/case/123 --click "Documents" --click "Show all" --get ./out
+shuck example.gov/case/123 --click "Documents" --click "Show all" --get ./out
 
 # keep the rendered HTML for later parsing
-ajar example.gov/register --dom page.html
+shuck example.gov/register --dom page.html
 ```
 
 ## What it does, in order

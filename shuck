@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ajar — open a JavaScript-walled page and get the files out.
+"""shuck — get the documents out of a JavaScript shell.
 
 Renders a page in headless Chrome, clicks open every tab, accordion and <details>
 element, then prints (or downloads) the documents hiding behind them.
@@ -26,7 +26,7 @@ import urllib.request
 __version__ = "0.1.0"
 
 CHROME_CANDIDATES = [
-    os.environ.get("AJAR_CHROME", ""),
+    os.environ.get("SHUCK_CHROME", ""),
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
     "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
@@ -51,7 +51,7 @@ def find_chrome():
     for c in CHROME_CANDIDATES:
         if c and os.path.exists(c):
             return c
-    sys.exit("ajar: no Chrome/Chromium found. Set AJAR_CHROME to the binary path.")
+    sys.exit("shuck: no Chrome/Chromium found. Set SHUCK_CHROME to the binary path.")
 
 
 # ----------------------------------------------------------------------------- websocket
@@ -225,7 +225,7 @@ def render(url, clicks=(), expand=True, wait=3.0, rounds=6, port=0, quiet=False)
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             port = s.getsockname()[1]
-    profile = os.path.join("/tmp", f"ajar-profile-{port}")
+    profile = os.path.join("/tmp", f"shuck-profile-{port}")
 
     say = (lambda *a: None) if quiet else (lambda *a: print(*a, file=sys.stderr))
     proc = subprocess.Popen(
@@ -247,7 +247,7 @@ def render(url, clicks=(), expand=True, wait=3.0, rounds=6, port=0, quiet=False)
             except Exception:
                 continue
         if not ws_url:
-            sys.exit("ajar: could not reach Chrome DevTools — is Chrome installed and runnable?")
+            sys.exit("shuck: could not reach Chrome DevTools — is Chrome installed and runnable?")
 
         ws = WS(ws_url)
         ws.call("Page.enable")
@@ -329,21 +329,21 @@ def download(links, outdir, quiet=False):
         ok += 1
         if not quiet:
             print(f"  ✓ {name}  ({len(blob) / 1e6:.1f} MB)", file=sys.stderr)
-    print(f"ajar: downloaded {ok} file(s) to {outdir}"
+    print(f"shuck: downloaded {ok} file(s) to {outdir}"
           + (f", {failed} failed" if failed else ""), file=sys.stderr)
 
 
 def main():
     p = argparse.ArgumentParser(
-        prog="ajar",
-        description="Open a JavaScript-walled page and get the files out.",
+        prog="shuck",
+        description="Get the documents out of a JavaScript shell.",
         epilog="Examples:\n"
-               "  ajar URL                      list the documents behind the JS\n"
-               "  ajar URL --all                list every link, not just document-ish ones\n"
-               "  ajar URL --match noise        only links whose name or url matches\n"
-               "  ajar URL --get ./docs         download them\n"
-               "  ajar URL --click 'Documents'  click something first\n"
-               "  ajar URL --dom page.html      save the rendered DOM instead\n",
+               "  shuck URL                      list the documents behind the JS\n"
+               "  shuck URL --all                list every link, not just document-ish ones\n"
+               "  shuck URL --match noise        only links whose name or url matches\n"
+               "  shuck URL --get ./docs         download them\n"
+               "  shuck URL --click 'Documents'  click something first\n"
+               "  shuck URL --dom page.html      save the rendered DOM instead\n",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("url", nargs="?")
     p.add_argument("--click", action="append", default=[], metavar="SEL|TEXT",
@@ -360,7 +360,7 @@ def main():
     p.add_argument("--wait", type=float, default=3.0, metavar="SEC",
                    help="settle time after load and each interaction (default 3)")
     p.add_argument("-q", "--quiet", action="store_true", help="suppress progress on stderr")
-    p.add_argument("-v", "--version", action="version", version=f"ajar {__version__}")
+    p.add_argument("-v", "--version", action="version", version=f"shuck {__version__}")
     args = p.parse_args()
 
     if not args.url:
@@ -375,7 +375,7 @@ def main():
         with open(args.dom, "w", encoding="utf-8") as fh:
             fh.write(html)
         if not args.quiet:
-            print(f"ajar: wrote {args.dom} ({len(html):,} chars)", file=sys.stderr)
+            print(f"shuck: wrote {args.dom} ({len(html):,} chars)", file=sys.stderr)
 
     seen, keep = set(), []
     for l in links:
@@ -397,7 +397,7 @@ def main():
         for l in keep:
             print(f"{l['label'][:110]}\t{l['href']}")
     if not args.quiet and not args.get:
-        print(f"ajar: {len(keep)} link(s)", file=sys.stderr)
+        print(f"shuck: {len(keep)} link(s)", file=sys.stderr)
     return 0
 
 
