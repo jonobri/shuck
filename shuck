@@ -215,6 +215,42 @@ LINKS_JS = r"""
 })()
 """
 
+# A blocked request and an empty-but-legitimate page both look like "0 links" unless we
+# check for this explicitly — so we do, right after the initial load.
+CHALLENGE_JS = r"""
+(() => {
+  const status = (() => {
+    try {
+      const nav = performance.getEntriesByType('navigation')[0];
+      return nav && typeof nav.responseStatus === 'number' ? nav.responseStatus : null;
+    } catch (e) { return null; }
+  })();
+  const title = (document.title || '').trim();
+  const body = (document.body && document.body.innerText || '').slice(0, 2000);
+  const hay = (title + ' ' + body).toLowerCase();
+
+  const textMarkers = [
+    ['cloudflare', /just a moment|checking (your browser|if the site connection is secure)|verify you are human|enable javascript and cookies to continue/i],
+    ['akamai', /access denied[\s\S]{0,80}reference #\d+/i],
+    ['perimeterx / human', /please verify you are a human|px-captcha/i],
+    ['datadome', /datadome/i],
+    ['generic', /unusual traffic|automated (queries|requests|access) from your (network|computer)|are you a robot/i],
+  ];
+  for (const [provider, re] of textMarkers) {
+    if (re.test(hay)) return { blocked: true, provider, status, title };
+  }
+  if (document.querySelector(
+      '#cf-wrapper, #challenge-running, #challenge-form, .cf-turnstile, '
+      + 'iframe[src*="challenges.cloudflare.com"]')) {
+    return { blocked: true, provider: 'cloudflare', status, title };
+  }
+  if (status && [403, 429, 503].includes(status)) {
+    return { blocked: true, provider: `unknown (HTTP ${status})`, status, title };
+  }
+  return { blocked: false, provider: null, status, title };
+})()
+"""
+
 
 # ----------------------------------------------------------------------------- driver
 
@@ -255,6 +291,17 @@ def render(url, clicks=(), expand=True, wait=3.0, rounds=6, port=0, quiet=False)
         say(f"  loading {url}")
         ws.call("Page.navigate", {"url": url})
         time.sleep(wait + 3)
+
+        block = ws.js(CHALLENGE_JS) or {}
+        if block.get("blocked"):
+            say(f"  {block['provider']} challenge detected, waiting once more before giving up")
+            time.sleep(wait + 5)
+            block = ws.js(CHALLENGE_JS) or {}
+        if block.get("blocked"):
+            detail = f"HTTP {block['status']}" if block.get("status") else f"title {block['title']!r}"
+            sys.exit(f"shuck: blocked by a {block['provider']} challenge ({detail}) — "
+                     f"got a bot-check page, not the real content. Try again in a bit, "
+                     f"raise --wait, or open the URL in a real browser first.")
 
         for c in clicks:
             say(f"  click {c!r}: {ws.js(CLICK_JS % json.dumps(c))}")

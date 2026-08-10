@@ -110,7 +110,8 @@ Then it kills Chrome and deletes the profile.
 ## Caveats
 
 - **It clicks things.** On a page with destructive controls, that's a bad idea — scope it with `--no-expand --click` instead.
-- It won't get past a login, a paywall, or a CAPTCHA, and doesn't try to.
+- It won't get past a login, a paywall, or a CAPTCHA, and doesn't try to. A lot of sites pass a plain headless Chrome through their bot check without any of that, though — worth just trying first.
+- When a site does block it (Cloudflare, Akamai, PerimeterX/Human, DataDome and similar), `shuck` detects the challenge page, waits once more in case it clears on its own, then exits `1` with a clear reason instead of silently reporting `0 link(s)`.
 - It's polite by default but has no rate limiting; don't point it at someone's server in a loop.
 - Respect the terms of service of whatever you point it at. This is for reaching documents that are already public, faster.
 

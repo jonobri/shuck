@@ -70,7 +70,7 @@ Print the version and exit.
 Path to the Chrome, Chromium, Brave or Edge binary, if it is not in a standard
 location.
 .SH EXIT STATUS
-0 on success, 1 on usage error, 130 if interrupted.
+0 on success, 1 on usage error or a detected bot-check block, 130 if interrupted.
 .SH CAVEATS
 .B shuck
 clicks things. Do not point it at a page with destructive controls without
@@ -78,6 +78,16 @@ clicks things. Do not point it at a page with destructive controls without
 and an explicit
 .BR \-\-click .
 It cannot get past logins, paywalls or CAPTCHAs and does not try.
+.PP
+Many sites pass a plain
+.B \-\-headless=new
+Chrome through their bot checks without incident, and no special handling is
+needed. When one does not \(em Cloudflare, Akamai, PerimeterX/Human, DataDome
+and similar interstitials \(em
+.B shuck
+detects the challenge page, waits once more in case it clears on its own, and
+then exits with status 1 and a clear reason rather than silently reporting
+zero links.
 .SH SEE ALSO
 .BR curl (1),
 .BR wget (1)

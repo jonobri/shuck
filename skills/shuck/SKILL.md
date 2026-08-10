@@ -8,7 +8,7 @@ description: >-
   fewer than expected) from a plain fetch, or when the user mentions shuck by
   name.
 metadata:
-  version: 1.0.0
+  version: 1.1.0
   requires:
     bins:
       - shuck
@@ -59,3 +59,4 @@ shuck <url> [options]
 - It won't get past a login, paywall, or CAPTCHA — don't retry against those, tell the user instead.
 - No built-in rate limiting — don't loop `shuck` over many URLs back-to-back against the same host; space it out or ask the user if bulk fetching is intended.
 - `SHUCK_CHROME=/path/to/binary` overrides which browser it launches, only needed if Chrome/Chromium/Brave/Edge isn't in a standard location.
+- Bot-check pages (Cloudflare, Akamai, PerimeterX/Human, DataDome, etc.) are detected explicitly: `shuck` waits once more in case the challenge clears on its own, then exits 1 with `shuck: blocked by a <provider> challenge (...)`. Plenty of sites pass through headless Chrome fine — try `shuck` before assuming a site is blocked. If you do get that error, don't loop retrying — either raise `--wait` once, or tell the user it needs a real browser/CAPTCHA solve, same as a login or paywall. A plain `0 link(s)` with exit 0, by contrast, means the page loaded fine and genuinely has nothing matching your filter.
