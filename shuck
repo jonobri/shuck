@@ -18,12 +18,23 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 __version__ = "0.1.0"
+
+# Document names are routinely non-ASCII (macrons, accents, em dashes). On a
+# console whose default encoding is not UTF-8 — e.g. cp1252 on Windows —
+# printing one raises UnicodeEncodeError midway through the listing and takes
+# the rest of the output with it, so pin both streams to UTF-8 up front.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, ValueError):
+        pass
 
 CHROME_CANDIDATES = [
     os.environ.get("SHUCK_CHROME", ""),
@@ -34,6 +45,11 @@ CHROME_CANDIDATES = [
     shutil.which("google-chrome") or "",
     shutil.which("chromium") or "",
     shutil.which("chromium-browser") or "",
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files\Chromium\Application\chrome.exe",
+    r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
 ]
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -45,6 +61,12 @@ DOC_HINT = re.compile(
     r"|getcontent|/download|/attachment|attachref|/documents?/|/files?/",
     re.I,
 )
+
+
+# Talking to our own headless Chrome must never go via a system proxy. Windows
+# reads proxy settings from the registry, where "<local>" does not exempt an
+# IP literal like 127.0.0.1, so the DevTools call gets proxied by default.
+_LOOPBACK = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def find_chrome():
@@ -261,7 +283,7 @@ def render(url, clicks=(), expand=True, wait=3.0, rounds=6, port=0, quiet=False)
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             port = s.getsockname()[1]
-    profile = os.path.join("/tmp", f"shuck-profile-{port}")
+    profile = os.path.join(tempfile.gettempdir(), f"shuck-profile-{port}")
 
     say = (lambda *a: None) if quiet else (lambda *a: print(*a, file=sys.stderr))
     proc = subprocess.Popen(
@@ -274,7 +296,7 @@ def render(url, clicks=(), expand=True, wait=3.0, rounds=6, port=0, quiet=False)
         for _ in range(60):
             time.sleep(0.5)
             try:
-                tabs = json.load(urllib.request.urlopen(
+                tabs = json.load(_LOOPBACK.open(
                     f"http://127.0.0.1:{port}/json/list", timeout=5))
                 page = next((t for t in tabs if t.get("type") == "page"), None)
                 if page:
